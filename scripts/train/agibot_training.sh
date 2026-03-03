@@ -12,6 +12,8 @@
 #     Download: huggingface-cli download Wan-AI/Wan2.1-I2V-14B-480P --local-dir ./checkpoints/Wan2.1-I2V-14B-480P
 #   - umt5-xxl tokenizer (auto-downloaded or pre-downloaded from HuggingFace)
 #     Download: huggingface-cli download google/umt5-xxl --local-dir ./checkpoints/umt5-xxl
+#   - DreamZero-AgiBot pretrained checkpoint (for loading LoRA weights before fine-tuning)
+#     git clone https://huggingface.co/GEAR-Dreams/DreamZero-AgiBot ./checkpoints/DreamZero-AgiBot
 
 export HYDRA_FULL_ERROR=1
 
@@ -93,4 +95,7 @@ torchrun --nproc_per_node $NUM_GPUS --standalone groot/vla/experiment/experiment
     text_encoder_pretrained_path=$WAN_CKPT_DIR/models_t5_umt5-xxl-enc-bf16.pth \
     image_encoder_pretrained_path=$WAN_CKPT_DIR/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth \
     vae_pretrained_path=$WAN_CKPT_DIR/Wan2.1_VAE.pth \
-    tokenizer_path=$TOKENIZER_DIR
+    tokenizer_path=$TOKENIZER_DIR \
+    pretrained_model_path=./checkpoints/DreamZero-AgiBot \
+    ++action_head_cfg.config.skip_component_loading=true \
+    ++action_head_cfg.config.defer_lora_injection=true

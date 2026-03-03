@@ -5,7 +5,7 @@ DreamZero is a World Action Model that jointly predicts actions and videos, achi
 
 ## News
 
-- **02/27:** DreamZero is **#1 on both [MolmoSpaces](https://huggingface.co/spaces/ai2-adapt/MolmoSpaces) and [RoboArena](https://robo-arena.github.io/)**! DreamZero-DROID is trained *from scratch* using only the DROID dataset — no pretraining on large-scale robot data, unlike competing VLAs. This demonstrates the strength of video-model backbones for generalist robot policies (VAMs/WAMs).
+- **02/27:** DreamZero is **#1 on both [MolmoSpaces]([https://huggingface.co/spaces/ai2-adapt/MolmoSpaces](https://molmospaces.allen.ai/leaderboard)) and [RoboArena]([https://robo-arena.github.io/](https://robo-arena.github.io/leaderboard))**! DreamZero-DROID is trained *from scratch* using only the DROID dataset — no pretraining on large-scale robot data, unlike competing VLAs. This demonstrates the strength of video-model backbones for generalist robot policies (VAMs/WAMs).
 - **02/27:** Released **DreamZero-AgiBot checkpoint** and **post-training code** for efficient few-shot adaptation. Post-train on just ~30 minutes of play data for your specific robot, and see the robot do basic language following and pick-and-place (see YAM experiments in our paper for more detail).
 - **02/20:** Released the **full training codebase, preprocessed dataset, and guide for new embodiments** to replicate the DreamZero-DROID checkpoint and train on your own robot. See [Adding a New Embodiment to DreamZero](docs/DATASET_TO_GEAR_AND_TRAIN.md) for a step-by-step walkthrough.
 
@@ -13,6 +13,7 @@ DreamZero is a World Action Model that jointly predicts actions and videos, achi
 
 **Available Now**
 - Pretrained DreamZero-DROID model checkpoint [[Huggingface](https://huggingface.co/GEAR-Dreams/DreamZero-DROID)]
+- Pretrained DreamZero-AgiBot checkpoint (for post-training on new embodiments) [[Huggingface](https://huggingface.co/GEAR-Dreams/DreamZero-AgiBot)]
 - Distributed WebSocket inference server (GB200, H100)
 - DiT caching for optimized inference (~0.6s on GB200, ~3s on H100)
 - DROID simulation evaluation support
@@ -96,15 +97,21 @@ We release a 14B pretrained DROID checkpoint on [Huggingface](https://huggingfac
 hf download GEAR-Dreams/DreamZero-DROID --repo-type model --local-dir <path/to/checkpoint>
 ```
 
-### DreamZero Pretrained Checkpoint (for fine-tuning on new embodiments)
+### DreamZero-AgiBot (for fine-tuning on new embodiments)
 
-To fine-tune DreamZero on a new embodiment (e.g. YAM, AgiBot), download the pretrained [dz_pretrained](https://huggingface.co/GEAR-Dreams/dz_pretrained) checkpoint (~45GB):
+To fine-tune DreamZero on a new embodiment (e.g. YAM, AgiBot), download the pretrained [DreamZero-AgiBot](https://huggingface.co/GEAR-Dreams/DreamZero-AgiBot) checkpoint (~45GB) to `./checkpoints/DreamZero-AgiBot`:
 
 ```bash
-hf download GEAR-Dreams/dz_pretrained --repo-type model --local-dir ./checkpoints/dz_pretrained
+git clone https://huggingface.co/GEAR-Dreams/DreamZero-AgiBot ./checkpoints/DreamZero-AgiBot
 ```
 
-This checkpoint is used as the base for LoRA post-training — see the [new embodiment guide](docs/DATASET_TO_GEAR_AND_TRAIN.md) and the YAM/AgiBot training scripts for usage.
+Or with the Hugging Face CLI:
+
+```bash
+hf download GEAR-Dreams/DreamZero-AgiBot --repo-type model --local-dir ./checkpoints/DreamZero-AgiBot
+```
+
+The YAM and AgiBot training scripts use `pretrained_model_path=./checkpoints/DreamZero-AgiBot` by default. See the [new embodiment guide](docs/DATASET_TO_GEAR_AND_TRAIN.md) for usage.
 
 ## Running the Inference Server
 

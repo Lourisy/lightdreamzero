@@ -398,7 +398,7 @@ torchrun --nproc_per_node $NUM_GPUS --standalone \
     image_encoder_pretrained_path=$WAN_CKPT_DIR/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth \
     vae_pretrained_path=$WAN_CKPT_DIR/Wan2.1_VAE.pth \
     tokenizer_path=$TOKENIZER_DIR \
-    pretrained_model_path=./checkpoints/dz_pretrained/copy-ckpt-50000 \
+    pretrained_model_path=./checkpoints/DreamZero-AgiBot \
     ++action_head_cfg.config.skip_component_loading=true \
     ++action_head_cfg.config.defer_lora_injection=true
 ```
@@ -421,10 +421,16 @@ torchrun --nproc_per_node $NUM_GPUS --standalone \
 
 ### Download the pretrained checkpoint
 
-The training scripts load from a pretrained DreamZero checkpoint for LoRA fine-tuning. Download [dz_pretrained](https://huggingface.co/GEAR-Dreams/dz_pretrained) (~45GB):
+The training scripts load from a pretrained DreamZero checkpoint for LoRA fine-tuning. Download [DreamZero-AgiBot](https://huggingface.co/GEAR-Dreams/DreamZero-AgiBot) (~45GB) to `./checkpoints/DreamZero-AgiBot`:
 
 ```bash
-hf download GEAR-Dreams/dz_pretrained --repo-type model --local-dir ./checkpoints/dz_pretrained
+git clone https://huggingface.co/GEAR-Dreams/DreamZero-AgiBot ./checkpoints/DreamZero-AgiBot
+```
+
+Or with the Hugging Face CLI:
+
+```bash
+hf download GEAR-Dreams/DreamZero-AgiBot --repo-type model --local-dir ./checkpoints/DreamZero-AgiBot
 ```
 
 ### Launch training
@@ -450,7 +456,7 @@ DATA_ROOT=/path/to/your_dataset OUTPUT_DIR=./checkpoints/run1 NUM_GPUS=4 \
 - [ ] Every state and action key appears in `normalization_modes` in the transform block
 - [ ] `relative_action_keys` are sub-key names that exist in both state and action
 - [ ] Wan2.1-I2V-14B-480P and umt5-xxl weights are available
-- [ ] `dz_pretrained` checkpoint is downloaded to `./checkpoints/dz_pretrained`
+- [ ] DreamZero-AgiBot checkpoint is downloaded to `./checkpoints/DreamZero-AgiBot`
 
 ---
 
