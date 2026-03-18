@@ -202,6 +202,27 @@ class BaseGrootSimPolicy(BaseTianshouPolicy):
         return {}
 
 
+def _update_tokenizer_path_in_config(cfg, new_path: str) -> None:
+    """Update tokenizer_path in the transforms subtree only (avoids trainer.model etc.)."""
+    from omegaconf import DictConfig, ListConfig
+    if isinstance(cfg, DictConfig):
+        if "tokenizer_path" in cfg:
+            cfg.tokenizer_path = new_path
+        # Only recurse via "transforms" to avoid triggering resolution of trainer, etc.
+        if "transforms" not in cfg:
+            return
+        sub = cfg.transforms
+        if isinstance(sub, DictConfig):
+            for v in sub.values():
+                _update_tokenizer_path_in_config(v, new_path)
+        elif isinstance(sub, ListConfig):
+            for v in sub:
+                _update_tokenizer_path_in_config(v, new_path)
+    elif isinstance(cfg, ListConfig):
+        for v in cfg:
+            _update_tokenizer_path_in_config(v, new_path)
+
+
 class GrootSimPolicy(BaseGrootSimPolicy):
     def __init__(
         self,
@@ -209,6 +230,7 @@ class GrootSimPolicy(BaseGrootSimPolicy):
         model_path: str,
         device: int | str,
         model_config_overrides: list[str] | None = [],
+        tokenizer_path_override: str | None = None,
         skip_assert_delta_indices: bool = False,
         skip_img_transform: bool = False,
         lazy_load: bool = False,
@@ -231,6 +253,8 @@ class GrootSimPolicy(BaseGrootSimPolicy):
         exp_cfg_dir = model_dir / "experiment_cfg"
         train_cfg_path = exp_cfg_dir / "conf.yaml"
         train_cfg = OmegaConf.load(train_cfg_path)
+        if tokenizer_path_override is not None:
+            _update_tokenizer_path_in_config(train_cfg, tokenizer_path_override)
         self.train_cfg = train_cfg
         self.lazy_load = lazy_load
 
@@ -339,6 +363,19 @@ class GrootSimPolicy(BaseGrootSimPolicy):
         if "gr1_unified_offline_rl" in metadatas and self.embodiment_tag.value == "gr1_unified":
             self.embodiment_tag = EmbodimentTag.GR1_UNIFIED_OFFLINE_RL
         metadata = DatasetMetadata.model_validate(metadatas[self.embodiment_tag.value])
+
+        # If the model's action head has target_video_height/width (e.g. DreamZero Wan 5B), use that
+        # as the expected video resolution so the transform matches the model. metadata.json can
+        # otherwise contain a different resolution (e.g. 180x320) from dataset config.
+        if hasattr(self.trained_model, "action_head") and hasattr(
+            self.trained_model.action_head, "config"
+        ):
+            cfg = self.trained_model.action_head.config
+            target_h = getattr(cfg, "target_video_height", None)
+            target_w = getattr(cfg, "target_video_width", None)
+            if target_h is not None and target_w is not None and metadata.modalities.video:
+                for key in metadata.modalities.video.keys():
+                    metadata.modalities.video[key].resolution = (int(target_w), int(target_h))
 
         # 2.2. Get the eval transforms
         assert (
@@ -519,10 +556,11 @@ class GrootSimPolicy(BaseGrootSimPolicy):
                 # Try to find the state data - check multiple possible key formats
                 last_state = None
                 
-                # Format 1: Direct key like "state.joint_position"
-                if state_key in obs:
+                
+                if last_state is None and state_key in obs:
+                    # Format 1: Direct key like "state.joint_position"
                     last_state = obs[state_key]
-                else:
+                elif last_state is None:
                     # Format 2: Search for keys containing both "state" and the key name
                     for obs_key in obs.keys():
                         if 'state' in obs_key and key in obs_key:

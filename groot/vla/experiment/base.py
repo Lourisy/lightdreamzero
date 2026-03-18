@@ -471,6 +471,12 @@ class BaseTrainer(transformers.Trainer):
             )
             self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
 
+            # DeepSpeed CPU Adam (ZeRO offload) expects 'bias_correction' in each param group.
+            # HuggingFace Trainer's AdamW does not set it, causing KeyError in cpu_adam.step().
+            if getattr(self.args, "deepspeed", None):
+                for group in self.optimizer.param_groups:
+                    group.setdefault("bias_correction", True)
+
         return self.optimizer
 
     def save_model(self, output_dir: Optional[str], _internal_call: bool):
@@ -568,8 +574,10 @@ class BaseTrainer(transformers.Trainer):
             "collate_fn": data_collator,
             "num_workers": self.args.dataloader_num_workers,
             "pin_memory": self.args.dataloader_pin_memory,
-            "persistent_workers": self.args.dataloader_persistent_workers,
         }
+        # persistent_workers is only valid when num_workers > 0 (PyTorch raises otherwise)
+        if self.args.dataloader_num_workers > 0:
+            dataloader_params["persistent_workers"] = self.args.dataloader_persistent_workers
 
         return DataLoader(train_dataset, **dataloader_params)
 
@@ -802,6 +810,7 @@ class BaseExperiment(ABC):
 
         loss_log_path = str(Path(training_args.output_dir) / "loss_log.jsonl")
         trainer.add_callback(LossLoggerCallback(output_path=loss_log_path))
+
 
         # Add profiling callback (local profiling only, no S3 upload)
         # Local: {output_dir}/profiling/rank_{id}/*.pt.trace.json

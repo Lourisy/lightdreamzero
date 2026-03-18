@@ -891,14 +891,23 @@ class CausalWanSelfAttention(nn.Module):
                     action_horizon = num_image_blocks * self.num_action_per_block
                     state_horizon = num_image_blocks * self.num_state_per_block
                     
+                    # Block layout must match actual register length. For 5B use 320x176 so latent frame_seqlen=55.
+                    if roped_query.shape[1] != half_seq_len + noisy_image_seq_len + action_horizon + state_horizon:
+                        raise ValueError(
+                            "Sequence length does not match block layout. "
+                            "For 5B use 320x176 (e.g. data=dreamzero/droid_relative_wan22 or image_resolution_width=320, image_resolution_height=176). "
+                            f"Got noisy_frames={noisy_frames}, num_image_blocks={num_image_blocks}, "
+                            f"action_register_length={action_register_length}. "
+                            "Ensure (noisy_frames - 1) // num_frame_per_block >= 1 and register length equals "
+                            "num_blocks * (num_action_per_block + num_state_per_block)."
+                        )
+                    
                     # Split clean and noisy parts
                     # Clean: [image tokens only]
                     clean_image_q = roped_query[:, :clean_image_seq_len]
                     clean_image_k = roped_key[:, :clean_image_seq_len]
                     clean_image_v = v[:, :clean_image_seq_len]
 
-                    assert roped_query.shape[1] == half_seq_len + noisy_image_seq_len + action_horizon + state_horizon
-                    
                     # Noisy: [image tokens][action tokens][state tokens]
                     noisy_image_q = roped_query[:, half_seq_len:half_seq_len + noisy_image_seq_len]
                     noisy_action_q = roped_query[:, half_seq_len + noisy_image_seq_len:half_seq_len + noisy_image_seq_len + action_horizon]
@@ -1161,6 +1170,20 @@ class CausalWanAttentionBlock(nn.Module):
         """
         e = (self.modulation.unsqueeze(1) + e).chunk(6, dim=2)
 
+        # Align modulation sequence length to x so mul/add broadcast (e.g. when F != L under compile)
+        L = x.shape[1]
+        aligned = []
+        for part in e:
+            L_e = part.shape[1]
+            if L_e == L:
+                aligned.append(part)
+            elif L_e >= L:
+                aligned.append(part[:, :L])
+            else:
+                repeat = (L + L_e - 1) // L_e
+                aligned.append(part.repeat_interleave(repeat, dim=1)[:, :L])
+        e = tuple(aligned)
+
         # self-attention
         y, updated_kv_cache = self.self_attn(
             x=(self.norm1(x) * (1 + e[1].squeeze(2)) + e[0].squeeze(2)),
@@ -1211,6 +1234,19 @@ class CausalHead(nn.Module):
             e(Tensor): Shape [B, F, 1, C]
         """
         e = (self.modulation.unsqueeze(1) + e).chunk(2, dim=2)
+        # Align modulation sequence length to x (e.g. when F != L1 under compile)
+        L = x.shape[1]
+        aligned = []
+        for part in e:
+            L_e = part.shape[1]
+            if L_e == L:
+                aligned.append(part)
+            elif L_e >= L:
+                aligned.append(part[:, :L])
+            else:
+                repeat = (L + L_e - 1) // L_e
+                aligned.append(part.repeat_interleave(repeat, dim=1)[:, :L])
+        e = tuple(aligned)
         x = (self.head(self.norm(x) * (1 + e[1].squeeze(2)) + e[0].squeeze(2)))
         return x
 
@@ -1253,11 +1289,14 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                  hidden_size=1024,
                  diffusion_model_pretrained_path=None,
                  num_action_per_block=32,
-                 num_state_per_block=1):
+                 num_state_per_block=1,
+                 concat_first_frame_latent=True):
         r"""
         Initialize the diffusion model backbone.
 
         Args:
+            concat_first_frame_latent (`bool`, *optional*, defaults to True):
+                If True, concat [x; y] before patch_embedding (14B I2V style). If False, latent only (5B pretrained style; first-frame via CLIP).
             model_type (`str`, *optional*, defaults to 't2v'):
                 Model variant - 't2v' (text-to-video) or 'i2v' (image-to-video)
             patch_size (`tuple`, *optional*, defaults to (1, 2, 2)):
@@ -1321,6 +1360,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         self.hidden_size = hidden_size
         self.num_action_per_block = num_action_per_block
         self.num_state_per_block = num_state_per_block
+        self.concat_first_frame_latent = concat_first_frame_latent
 
         max_num_embodiments = 1
 
@@ -1377,7 +1417,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             rope_params(1024, 2 * (d // 6)),
             rope_params(1024, 2 * (d // 6)),
         ]
-        if model_type == 'i2v':
+        if model_type in ('i2v', 'ti2v'):
             self.img_emb = MLPProj(1280, dim)
 
         # initialize weights
@@ -1725,8 +1765,13 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             action_length = 0
             action_register_length = None
 
-        # time embeddings
-        timestep = timestep.unsqueeze(-1).expand(B, F, seq_len // F).reshape(B, -1)
+        # time embeddings: expand to exactly seq_len so e matches x (5B: frame_seqlen=50, 1 frame -> 50 tokens)
+        if F <= seq_len:
+            repeat = (seq_len + F - 1) // F
+            timestep = timestep.repeat_interleave(repeat, dim=1)[:, :seq_len]
+        else:
+            indices = torch.linspace(0, F - 1, seq_len, device=timestep.device, dtype=torch.long)
+            timestep = timestep[:, indices]
 
         if action is not None:
             assert timestep_action is not None
@@ -1911,7 +1956,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             assert clip_feature is not None and y is not None
         assert context.shape[1] == self.text_len
 
-        if y is not None:
+        # Concat [x; y] only when pretrained that way (14B). 5B uses latent only, first-frame via CLIP.
+        if y is not None and self.concat_first_frame_latent:
             x = torch.cat([x, y.to(dtype=x.dtype)], dim=1)
 
         # embeddings
@@ -1988,7 +2034,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         if self.model_type == 'i2v':
             assert clip_feature is not None and y is not None
 
-        if y is not None:
+        # Concat [x; y] only when pretrained that way (14B). 5B uses latent only, first-frame via CLIP.
+        if y is not None and self.concat_first_frame_latent:
             x = torch.cat([x, y.to(dtype=x.dtype)], dim=1)
 
         # embeddings
@@ -2048,7 +2095,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             context = torch.cat([clip_embedding, context], dim=1)
 
         if clean_x is not None:
-            if y is not None:
+            if y is not None and self.concat_first_frame_latent:
                 clean_x = torch.cat([clean_x, y.to(dtype=clean_x.dtype)], dim=1)
             clean_x = self.patch_embedding(clean_x)
             clean_x = clean_x.flatten(start_dim=2).transpose(1, 2)

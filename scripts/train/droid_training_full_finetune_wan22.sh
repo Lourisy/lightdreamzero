@@ -1,28 +1,26 @@
 #!/bin/bash
-# DreamZero DROID Training Script with Wan2.2-TI2V-5B backbone
+# DreamZero DROID Full Fine-Tuning Script with Wan2.2-TI2V-5B backbone
 #
 # Usage:
-#   bash scripts/train/droid_training_wan22.sh
+#   bash scripts/train/droid_training_full_finetune_wan22.sh
 #
 # Prerequisites:
 #   - DROID dataset in LeRobot format at DROID_DATA_ROOT
 #     Download: huggingface-cli download GEAR-Dreams/DreamZero-DROID-Data --repo-type dataset --local-dir ./data/droid_lerobot
-#   - Wan2.2-TI2V-5B weights (download from HuggingFace)
+#   - Wan2.2-TI2V-5B weights (auto-downloaded or pre-downloaded from HuggingFace)
 #     huggingface-cli download Wan-AI/Wan2.2-TI2V-5B --local-dir ./checkpoints/Wan2.2-TI2V-5B
 #   - Image encoder (CLIP) from Wan2.1 - Wan2.2-TI2V-5B does not include it
-#     Option A: huggingface-cli download Wan-AI/Wan2.1-I2V-14B-480P --local-dir ./checkpoints/Wan2.1-I2V-14B-480P
-#     Option B: Set IMAGE_ENCODER_DIR to a path containing models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth
+#     huggingface-cli download Wan-AI/Wan2.1-I2V-14B-480P --local-dir ./checkpoints/Wan2.1-I2V-14B-480P
 #   - umt5-xxl tokenizer (auto-downloaded or pre-downloaded)
 #     huggingface-cli download google/umt5-xxl --local-dir ./checkpoints/umt5-xxl
 
 export HYDRA_FULL_ERROR=1
 
-# Repo root: must be a directory that contains groot/ (so experiment.py can be found).
-# Beaker/weka uses /root/yejink/dreamzero; image has /root/dreamzero; else script location.
+# Repo root (same logic as droid_training_wan22.sh)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 if [ -n "$DREAMZERO_ROOT" ] && [ -d "$DREAMZERO_ROOT/groot" ]; then
-    : # keep existing and valid
+    :
 elif [ -d "/root/yejink/dreamzero/groot" ]; then
     DREAMZERO_ROOT=/root/yejink/dreamzero
 elif [ -d "/root/dreamzero/groot" ]; then
@@ -38,20 +36,27 @@ if [ ! -d "$DREAMZERO_ROOT/groot" ]; then
 fi
 
 # ============ USER CONFIGURATION ============
-NUM_GPUS=${NUM_GPUS:-8}
 DROID_DATA_ROOT=${DROID_DATA_ROOT:-"$DREAMZERO_ROOT/data/droid_lerobot"}
-# If env set the old relative default, resolve to repo root (e.g. Beaker image env)
 if [ "$DROID_DATA_ROOT" = "./data/droid_lerobot" ]; then
     DROID_DATA_ROOT="$DREAMZERO_ROOT/data/droid_lerobot"
 fi
-OUTPUT_DIR=${OUTPUT_DIR:-"$DREAMZERO_ROOT/checkpoints/dreamzero_droid_wan22_lora"}
+# Fixed output dir so Beaker restarts resume from latest checkpoint in this folder.
+# For concurrent runs use: OUTPUT_DIR=.../dreamzero_droid_wan22_full_finetune_$(date +%Y%m%d_%H%M%S)
+#
+# Resume from 100k to 200k: use this same OUTPUT_DIR and run this script with max_steps=200000.
+# If the 100k run completed (saved final model), the code will see config.json and skip training.
+# To force resume: remove config.json from OUTPUT_DIR so the latest checkpoint-* is used, then run.
+OUTPUT_DIR=${OUTPUT_DIR:-"$DREAMZERO_ROOT/checkpoints/dreamzero_droid_wan22_full_finetune"}
 
-# Wan2.2-TI2V-5B checkpoint (contains: diffusion weights, T5, VAE)
+NUM_GPUS=${NUM_GPUS:-4}
+PER_DEVICE_BS=${PER_DEVICE_BS:-1}
+# Global batch: default = NUM_GPUS * PER_DEVICE_BS. Override for larger effective batch, e.g. GLOBAL_BATCH_SIZE=128
+# (uses gradient accumulation; memory stays same. With 4 GPUs, 128 → grad_accum=32.)
+GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE:-$((NUM_GPUS * PER_DEVICE_BS))}
+
+# Wan2.2-TI2V-5B checkpoint
 WAN22_CKPT_DIR=${WAN22_CKPT_DIR:-"$DREAMZERO_ROOT/checkpoints/Wan2.2-TI2V-5B"}
-
-# Image encoder: Wan2.2-TI2V-5B does NOT include CLIP - use Wan2.1's or standalone
 IMAGE_ENCODER_DIR=${IMAGE_ENCODER_DIR:-"$DREAMZERO_ROOT/checkpoints/Wan2.1-I2V-14B-480P"}
-
 TOKENIZER_DIR=${TOKENIZER_DIR:-"$DREAMZERO_ROOT/checkpoints/umt5-xxl"}
 # =============================================
 
@@ -66,22 +71,18 @@ if [ ! -d "$TOKENIZER_DIR" ] || [ -z "$(ls -A "$TOKENIZER_DIR" 2>/dev/null)" ]; 
     huggingface-cli download google/umt5-xxl --local-dir "$TOKENIZER_DIR"
 fi
 
-# Image encoder: download Wan2.1 if not present (only need CLIP from it)
 if [ ! -f "$IMAGE_ENCODER_DIR/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth" ]; then
     echo "Image encoder not found. Downloading Wan2.1-I2V-14B-480P (for CLIP only)..."
     huggingface-cli download Wan-AI/Wan2.1-I2V-14B-480P --local-dir "$IMAGE_ENCODER_DIR"
 fi
 # ================================================
 
-# Validate dataset exists
 if [ ! -d "$DROID_DATA_ROOT" ]; then
     echo "ERROR: DROID dataset not found at $DROID_DATA_ROOT"
     echo "Download with: huggingface-cli download GEAR-Dreams/DreamZero-DROID-Data --repo-type dataset --local-dir $DROID_DATA_ROOT"
     exit 1
 fi
 
-# Use image Python 3.11 when available (Dockerfile installs dreamzero with python3.11 -m pip).
-# Absolute path so worker processes open the correct file even if their cwd differs.
 EXPERIMENT_PY="$DREAMZERO_ROOT/groot/vla/experiment/experiment.py"
 if [ ! -f "$EXPERIMENT_PY" ]; then
     echo "ERROR: Not found: $EXPERIMENT_PY"
@@ -100,11 +101,13 @@ else
 fi
 cd "$DREAMZERO_ROOT"
 
+# Full fine-tune: train_architecture=full, save_lora_only=false, ZeRO-2 (+ optional CPU offload)
+DEEPSPEED_CFG=${DEEPSPEED_CFG:-zero2_offload}
 "${RUN_CMD[@]}" \
     report_to=wandb \
     data=dreamzero/droid_relative_wan22 \
     wandb_project=dreamzero \
-    train_architecture=lora \
+    train_architecture=full \
     num_frames=33 \
     action_horizon=24 \
     num_views=3 \
@@ -116,23 +119,26 @@ cd "$DREAMZERO_ROOT"
     num_state_per_block=1 \
     seed=42 \
     training_args.learning_rate=1e-5 \
-    training_args.deepspeed="groot/vla/configs/deepspeed/zero2.json" \
+    training_args.deepspeed="groot/vla/configs/deepspeed/${DEEPSPEED_CFG}.json" \
     save_steps=1000 \
     training_args.warmup_ratio=0.05 \
     output_dir=$OUTPUT_DIR \
-    per_device_train_batch_size=1 \
-    max_steps=100 \
+    per_device_train_batch_size=$PER_DEVICE_BS \
+    global_batch_size=$GLOBAL_BATCH_SIZE \
+    max_steps=200000 \
     weight_decay=1e-5 \
     save_total_limit=10 \
     upload_checkpoints=false \
     bf16=true \
     tf32=true \
     eval_bf16=true \
-    dataloader_pin_memory=false \
-    dataloader_num_workers=1 \
-    save_lora_only=true \
+    dataloader_pin_memory=true \
+    dataloader_num_workers=4 \
+    image_resolution_width=320 \
+    image_resolution_height=160 \
+    save_lora_only=false \
     max_chunk_size=4 \
-    save_strategy=no \
+    save_strategy=steps \
     droid_data_root=$DROID_DATA_ROOT \
     dit_version=$WAN22_CKPT_DIR \
     text_encoder_pretrained_path=$WAN22_CKPT_DIR/models_t5_umt5-xxl-enc-bf16.pth \
