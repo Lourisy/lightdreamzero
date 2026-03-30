@@ -116,10 +116,10 @@ def apply_lightx2v_optimizations(
         # Check if the device is Ampere or newer (FP8 hardware support)
         if torch.cuda.is_available():
             cap = torch.cuda.get_device_capability()
-            if cap[0] >= 8: # Ampere, Ada, Hopper
+            if cap[0] >= 9: # Hopper, Blackwell
                 apply_fp8_quantization_to_dit(model)
             else:
-                logger.warning(f"FP8 is only supported efficiently on Ampere+ GPUs (Capability >= 8.0). Detected: {cap}. Skipping FP8.")
+                logger.warning(f"FP8 is only supported natively on Hopper (H100) or newer GPUs (Capability >= 9.0). Detected A100/Ampere (Capability {cap}). Skipping FP8 to avoid emulation slowdown.")
         else:
             apply_fp8_quantization_to_dit(model)
             
@@ -128,12 +128,13 @@ def apply_lightx2v_optimizations(
         logger.info("Setting up torch.compile for DiT backbone...")
         # Reduce compilation time by limiting ops
         torch._dynamo.config.suppress_errors = True
-        # In DreamZero, the trained_model is a ModelWrapper
-        if hasattr(model, "trained_model") and hasattr(model.trained_model, "dit"):
-            model.trained_model.dit = torch.compile(
-                model.trained_model.dit, 
+        # In DreamZero, the DiT model is inside model.action_head.model (WanModel)
+        if hasattr(model, "action_head") and hasattr(model.action_head, "model"):
+            model.action_head.model = torch.compile(
+                model.action_head.model, 
                 mode="reduce-overhead",
                 fullgraph=False
             )
+            logger.info("Successfully wrapped DiT backbone with torch.compile!")
             
     logger.info("LightX2V optimizations applied successfully.")
