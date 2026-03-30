@@ -235,6 +235,10 @@ class GrootSimPolicy(BaseGrootSimPolicy):
         skip_img_transform: bool = False,
         lazy_load: bool = False,
         device_mesh: DeviceMesh | None = None,
+        use_lightx2v: bool = False,
+        use_sageattention: bool = False,
+        use_fp8: bool = False,
+        compile_model: bool = False,
     ):
         """
         Initialize the GrootSimPolicy.
@@ -338,6 +342,15 @@ class GrootSimPolicy(BaseGrootSimPolicy):
             model.to(device='cpu')
         else:
             model.to(device=device)
+
+        if use_lightx2v:
+            from groot.vla.model.n1_5.modules.lightx2v_optimizations import apply_lightx2v_optimizations
+            apply_lightx2v_optimizations(
+                model=model,
+                use_sageattention=use_sageattention,
+                use_fp8=use_fp8,
+                compile_model=compile_model
+            )
 
         # Post initialize, move RoPE freqs to cuda.
         model.post_initialize()

@@ -39,6 +39,10 @@ class Args:
     enable_dit_cache: bool = False
     index: int = 0
     max_chunk_size: int | None = None  # If None, use config value. Otherwise override max_chunk_size for inference.
+    use_lightx2v: bool = False
+    use_sageattention: bool = False
+    use_fp8: bool = False
+    compile_model: bool = False
 
 
 class ARDroidRoboarenaPolicy:
@@ -768,6 +772,10 @@ def main(args: Args) -> None:
         model_path=model_path,
         device="cuda" if torch.cuda.is_available() else "cpu",
         device_mesh=device_mesh,
+        use_lightx2v=args.use_lightx2v,
+        use_sageattention=args.use_sageattention,
+        use_fp8=args.use_fp8,
+        compile_model=args.compile_model,
     )
 
     # Create server for all ranks - rank 0 handles websocket, others run worker loop

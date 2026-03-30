@@ -244,3 +244,7 @@ groot/control/envs/yam/data/eval/*
 
 checkpoints/
 video_pred_output*/
+
+server_run.log
+*.pth
+*.safetensors
