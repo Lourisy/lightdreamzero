@@ -337,6 +337,16 @@ class GrootSimPolicy(BaseGrootSimPolicy):
         if self.eval_bf16 and not lazy_load:
             model = model.to(dtype=torch.bfloat16)
 
+        if use_lightx2v and use_fp8:
+            import logging
+            from groot.vla.model.n1_5.modules.lightx2v_optimizations import apply_fp8_quantization_to_dit
+            cap = torch.cuda.get_device_capability() if torch.cuda.is_available() else [0, 0]
+            if cap[0] >= 9:
+                logging.getLogger(__name__).info("Injecting FP8 on CPU BEFORE moving to GPU to save VRAM...")
+                apply_fp8_quantization_to_dit(model)
+            else:
+                logging.getLogger(__name__).warning("A100/Ampere detected. Skipping FP8 injection to prevent emulation slowdown.")
+
         # Store model initially on CPU if lazy loading
         if lazy_load:
             model.to(device='cpu')
@@ -348,7 +358,7 @@ class GrootSimPolicy(BaseGrootSimPolicy):
             apply_lightx2v_optimizations(
                 model=model,
                 use_sageattention=use_sageattention,
-                use_fp8=use_fp8,
+                use_fp8=False, # Already applied above on CPU to prevent OOM
                 compile_model=compile_model
             )
 
