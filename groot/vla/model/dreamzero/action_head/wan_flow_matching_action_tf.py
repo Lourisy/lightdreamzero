@@ -1349,12 +1349,12 @@ class WANPolicyHead(ActionHead):
         return flow_pred
 
     def post_initialize(self):
-        # Move models to the cuda device and set the dtype to bfloat16.
-        print("Moving models to the cuda device and setting the dtype to bfloat16.")
-        self.model.to(device=self._device, dtype=torch.bfloat16)
-        self.text_encoder.to(device=self._device, dtype=torch.bfloat16)
-        self.image_encoder.to(device=self._device, dtype=torch.bfloat16)
-        self.vae.to(device=self._device, dtype=torch.bfloat16)
+        # Move models to the cuda device and set the dtype to bfloat16. (remove bf16)
+        print("Moving models to the cuda device.")
+        self.model.to(device=self._device)
+        self.text_encoder.to(device=self._device)
+        self.image_encoder.to(device=self._device)
+        self.vae.to(device=self._device)
         import os
         ENABLE_TENSORRT = os.getenv("ENABLE_TENSORRT", "False").lower() == "true"
         LOAD_TRT_ENGINE = os.getenv("LOAD_TRT_ENGINE", None)
