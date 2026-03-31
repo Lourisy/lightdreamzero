@@ -76,25 +76,34 @@ def apply_fp8_quantization_to_dit(model: nn.Module):
         pass
 
     count = 0
-    # We only apply it to specific Linear layers in the DiT block to avoid degrading the action head
+    # Apply to heavy Transformer blocks (T5 and DiT) while completely avoiding sensitive regression heads
     for name, module in model.named_modules():
         if isinstance(module, nn.Linear):
-            # Skip action head and output projections which might be precision sensitive
-            if "action_head" in name or "head" in name or "proj_out" in name:
+            # 1. Skip ALL sensitive action decoders, adapters, and final output heads
+            sensitive_keywords = [
+                "proj_out",              # Action regressions
+                "control_adapter",       # Joint condition
+                "action_head.model.head",# DiT final output projection
+                "img_emb",               # Vision condition
+                "time_",                 # Time embeddings
+                "patch_"                 # Patch embeddings
+            ]
+            if any(k in name for k in sensitive_keywords):
                 continue
-            
-            # Simple weight casting for demonstration/compatibility. 
-            # In a full TRT/TE pipeline, this would use TE.Linear
+                
+            # 2. Skip any other components in the action_head outside of the main DiT '.model'
+            if "action_head" in name and "action_head.model." not in name:
+                continue
+
+            # If it passes the above, it's a safe heavy linear layer (DiT blocks or T5 textual blocks)
             if getattr(module, 'weight', None) is not None:
-                # We cast weight to float8_e4m3fn, but keep compute in bf16/fp16 for safety
-                # during causal AR. PyTorch >= 2.1 supports this natively for memory savings.
                 try:
                     module.weight.data = module.weight.data.to(torch.float8_e4m3fn)
                     count += 1
                 except Exception as e:
                     logger.debug(f"Could not convert module {name} to fp8: {e}")
                     
-    logger.info(f"Cast {count} Linear layer weights to FP8 to save VRAM and Bandwidth.")
+    logger.info(f"Cast {count} Heavy Linear layer weights (DiT + T5) to FP8 to save VRAM.")
     return True
 
 
