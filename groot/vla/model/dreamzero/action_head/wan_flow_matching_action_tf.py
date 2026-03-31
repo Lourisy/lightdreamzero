@@ -540,11 +540,27 @@ class WANPolicyHead(ActionHead):
         return image
 
     def encode_prompt(self, input_ids, attention_mask):
+        # 1) Attempt to use cached embeddings to avoid waking up T5
+        input_hash = hash(input_ids.cpu().numpy().tobytes())
+        if not hasattr(self, '_prompt_cache'):
+            self._prompt_cache = {}
+        if input_hash in self._prompt_cache:
+            return self._prompt_cache[input_hash]
+
+        # 2) Dynamically load T5 to GPU for a split second (costs 11GB temporarily)
+        self.text_encoder.to(device=self.device)
+
         seq_lens = attention_mask.gt(0).sum(dim=1).long()
         prompt_emb = self.text_encoder(input_ids, attention_mask)
         prompt_emb = prompt_emb.clone().to(dtype=torch.bfloat16)
         for i, v in enumerate(seq_lens):
             prompt_emb[:, v:] = 0
+
+        # 3) EVICT to CPU and clear VRAM immediately! (saves 11GB permanently)
+        self.text_encoder.to(device='cpu')
+        torch.cuda.empty_cache()
+
+        self._prompt_cache[input_hash] = prompt_emb
         return prompt_emb
 
     def _ensure_vae_on_device(self, ref_tensor):
@@ -1352,9 +1368,11 @@ class WANPolicyHead(ActionHead):
         # Move models to the cuda device and set the dtype to bfloat16. (remove bf16)
         print("Moving models to the cuda device.")
         self.model.to(device=self._device)
-        self.text_encoder.to(device=self._device)
         self.image_encoder.to(device=self._device)
         self.vae.to(device=self._device)
+        print("Evicting T5 TextEncoder to CPU (RAM) to permanently save 11GB VRAM for 5090 cluster!")
+        self.text_encoder.to(device='cpu')
+        torch.cuda.empty_cache()
         import os
         ENABLE_TENSORRT = os.getenv("ENABLE_TENSORRT", "False").lower() == "true"
         LOAD_TRT_ENGINE = os.getenv("LOAD_TRT_ENGINE", None)
@@ -1362,19 +1380,18 @@ class WANPolicyHead(ActionHead):
         # Torch compile the modules. Skip _forward_blocks: Dynamo with fullgraph can fail on
         # shape variation (e.g. x [1,50,C] vs e [1,200,C]); the block aligns e to x at runtime.
         if not ENABLE_TENSORRT:
-            print("Torch compiling the TextEncoder, ImageEncoder, and VAE modules (Wan _forward_blocks not compiled).")
+            print("Skipping aggressive torch.compile on TextEncoder and VAE to save VRAM for 5090 cluster.")
+            # self.text_encoder.forward = torch.compile(
+            #     mode="reduce-overhead", fullgraph=True, dynamic=False,
+            # )(self.text_encoder.forward)
 
-            self.text_encoder.forward = torch.compile(
-                mode="reduce-overhead", fullgraph=True, dynamic=False,
-            )(self.text_encoder.forward)
+            # self.image_encoder.model.visual.forward = torch.compile(
+            #     mode="reduce-overhead", fullgraph=True, dynamic=False,
+            # )(self.image_encoder.model.visual.forward)
 
-            self.image_encoder.model.visual.forward = torch.compile(
-                mode="reduce-overhead", fullgraph=True, dynamic=False,
-            )(self.image_encoder.model.visual.forward)
-
-            self.vae.model.encode = torch.compile(
-                mode="reduce-overhead", fullgraph=True, dynamic=False,
-            )(self.vae.model.encode)
+            # self.vae.model.encode = torch.compile(
+            #     mode="reduce-overhead", fullgraph=True, dynamic=False,
+            # )(self.vae.model.encode)
         
         self.trt_engine = None
         if LOAD_TRT_ENGINE is not None:
