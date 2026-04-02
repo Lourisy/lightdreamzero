@@ -75,12 +75,13 @@ class Fp8Linear(nn.Module):
         amax = w.abs().amax().clamp(min=1e-12)
         scale = self._FP8_MAX / amax
 
-        # Weight stored transposed & contiguous [K, N] for _scaled_mm(A[M,K], B[K,N])
+        # Weight stored in original [out_features, in_features] layout (row-major).
+        # At forward time we pass weight.t() which gives a column-major view,
+        # satisfying cuBLASLt's requirement: A=row-major × B=column-major.
         self.register_buffer(
             "weight_fp8",
             (w * scale).clamp(-self._FP8_MAX, self._FP8_MAX)
             .to(torch.float8_e4m3fn)
-            .t()
             .contiguous(),
         )
         self.register_buffer(
@@ -106,10 +107,10 @@ class Fp8Linear(nn.Module):
         x_fp8 = (x * scale).clamp(-self._FP8_MAX, self._FP8_MAX).to(torch.float8_e4m3fn)
         x_scale_inv = (1.0 / scale).to(torch.float32)
 
-        # FP8 tensor core matmul: both operands in FP8, ~2x faster than BF16
+        # FP8 tensor core matmul: A[M,K] (row-major) × B[K,N] (column-major via .t())
         out = torch._scaled_mm(
             x_fp8,
-            self.weight_fp8,
+            self.weight_fp8.t(),  # column-major view, no copy
             scale_a=x_scale_inv,
             scale_b=self.weight_scale_inv,
             out_dtype=compute_dtype,
