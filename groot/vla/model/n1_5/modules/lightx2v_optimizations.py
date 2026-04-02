@@ -61,10 +61,83 @@ def apply_sageattention_to_model(model: nn.Module):
     return True
 
 
+class Fp8Linear(nn.Module):
+    """Drop-in nn.Linear replacement using FP8 storage + torch._scaled_mm for
+    FP8-accelerated matmul on Hopper (H100) / Blackwell (B200/5090) GPUs.
+    - Storage: FP8 e4m3fn weights → ~50% VRAM savings vs BF16
+    - Compute: FP8 tensor core matmul → ~2x throughput vs BF16"""
+
+    _FP8_MAX = torch.finfo(torch.float8_e4m3fn).max  # 448.0
+
+    def __init__(self, original: nn.Linear):
+        super().__init__()
+        w = original.weight.data.float()
+        amax = w.abs().amax().clamp(min=1e-12)
+        scale = self._FP8_MAX / amax
+
+        # Weight stored transposed & contiguous [K, N] for _scaled_mm(A[M,K], B[K,N])
+        self.register_buffer(
+            "weight_fp8",
+            (w * scale).clamp(-self._FP8_MAX, self._FP8_MAX)
+            .to(torch.float8_e4m3fn)
+            .t()
+            .contiguous(),
+        )
+        self.register_buffer(
+            "weight_scale_inv",
+            torch.tensor(1.0 / scale.item(), dtype=torch.float32),
+        )
+        self.bias = (
+            nn.Parameter(original.bias.data.clone(), requires_grad=False)
+            if original.bias is not None
+            else None
+        )
+        self.in_features = original.in_features
+        self.out_features = original.out_features
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        shape = x.shape
+        compute_dtype = x.dtype
+        x = x.reshape(-1, self.in_features).contiguous()
+
+        # Dynamic per-tensor quantization of input activations to FP8
+        amax = x.abs().amax().clamp(min=1e-12)
+        scale = self._FP8_MAX / amax
+        x_fp8 = (x * scale).clamp(-self._FP8_MAX, self._FP8_MAX).to(torch.float8_e4m3fn)
+        x_scale_inv = (1.0 / scale).to(torch.float32)
+
+        # FP8 tensor core matmul: both operands in FP8, ~2x faster than BF16
+        out = torch._scaled_mm(
+            x_fp8,
+            self.weight_fp8,
+            scale_a=x_scale_inv,
+            scale_b=self.weight_scale_inv,
+            out_dtype=compute_dtype,
+            use_fast_accum=True,
+        )
+
+        if self.bias is not None:
+            out = out + self.bias
+        return out.reshape(*shape[:-1], self.out_features)
+
+
+def _set_submodule(root: nn.Module, path: str, new_module: nn.Module):
+    """Set a submodule given a dot-separated path (e.g. 'blocks.0.ffn.0')."""
+    parts = path.split(".")
+    parent = root
+    for p in parts[:-1]:
+        parent = getattr(parent, p) if not p.isdigit() else parent[int(p)]
+    if parts[-1].isdigit():
+        parent[int(parts[-1])] = new_module
+    else:
+        setattr(parent, parts[-1], new_module)
+
+
 def apply_fp8_quantization_to_dit(model: nn.Module):
     """
     Applies FP8 conversion to the DiT backbone only, avoiding precision-sensitive
-    action heads or VAE decoders.
+    action heads or VAE decoders. Uses Fp8Linear wrapper so that forward() works
+    even when the input is BFloat16 (dynamic dequantization).
     """
     try:
         from torch._dynamo.utils import is_fp8_supported
@@ -76,6 +149,9 @@ def apply_fp8_quantization_to_dit(model: nn.Module):
         pass
 
     count = 0
+    # Collect (name, module) pairs first to avoid mutating while iterating
+    replacements: list[tuple[str, nn.Linear]] = []
+
     # Apply to heavy Transformer blocks (T5 and DiT) while completely avoiding sensitive regression heads
     for name, module in model.named_modules():
         if isinstance(module, nn.Linear):
@@ -97,14 +173,18 @@ def apply_fp8_quantization_to_dit(model: nn.Module):
 
             # If it passes the above, it's a safe heavy linear layer (DiT blocks or T5 textual blocks)
             if getattr(module, 'weight', None) is not None:
-                try:
-                    module.weight.data = module.weight.data.to(torch.float8_e4m3fn)
-                    count += 1
-                except Exception as e:
-                    logger.debug(f"Could not convert module {name} to fp8: {e}")
+                replacements.append((name, module))
+
+    # Now perform the actual replacements
+    for name, module in replacements:
+        try:
+            fp8_module = Fp8Linear(module)
+            _set_submodule(model, name, fp8_module)
+            count += 1
+        except Exception as e:
+            logger.debug(f"Could not convert module {name} to fp8: {e}")
                     
-    logger.info(f"Cast {count} Heavy Linear layer weights (DiT + T5) to FP8 to save VRAM.")
-    return True
+    logger.info(f"Replaced {count} Heavy Linear layers (DiT + T5) with Fp8Linear to save VRAM.")
 
 
 def apply_lightx2v_optimizations(
