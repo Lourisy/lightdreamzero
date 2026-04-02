@@ -4,6 +4,9 @@ import torch
 import torch.nn as nn
 from functools import partial
 
+# Enable memory optimization for Blackwell/5090 GPUs
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 logger = logging.getLogger(__name__)
 
 # Try to import sageattention
@@ -220,11 +223,13 @@ def apply_lightx2v_optimizations(
         torch._dynamo.config.suppress_errors = True
         # In DreamZero, the DiT model is inside model.action_head.model (WanModel)
         if hasattr(model, "action_head") and hasattr(model.action_head, "model"):
+            # Use 'max-autotune-no-cudagraphs' to save ~5GB VRAM by reclaiming CUDAGraph overhead
+            # while keeping optimized Triton kernels for DiT.
             model.action_head.model = torch.compile(
                 model.action_head.model, 
-                mode="reduce-overhead",
+                mode="max-autotune-no-cudagraphs",
                 fullgraph=False
             )
-            logger.info("Successfully wrapped DiT backbone with torch.compile!")
+            logger.info("Successfully wrapped DiT backbone with torch.compile (max-autotune-no-cudagraphs)!")
             
     logger.info("LightX2V optimizations applied successfully.")

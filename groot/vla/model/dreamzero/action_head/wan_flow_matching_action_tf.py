@@ -598,6 +598,7 @@ class WANPolicyHead(ActionHead):
             y = torch.concat([msk, y], dim=1)
         return clip_context, y, new_image
     
+    
     def prepare_extra_input(self, latents=None):
         return {}
 

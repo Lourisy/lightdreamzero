@@ -288,6 +288,10 @@ class ARDroidRoboarenaPolicy:
             result_batch, video_pred = self._policy.lazy_joint_forward_causal(batch)
         dist.barrier()
         
+        # Periodic cache cleaning to prevent OOM
+        if self._call_count % 2 == 0:
+            torch.cuda.empty_cache()
+        
         # Store video predictions for potential saving
         self.video_across_time.append(video_pred)
         
@@ -583,6 +587,9 @@ class WebsocketPolicyServer:
                     with torch.no_grad():
                         result_batch, video_pred = self._policy.lazy_joint_forward_causal(batch)
                     dist.barrier()
+                    
+                    # Periodic cache cleaning to prevent fragmentation on 5090
+                    torch.cuda.empty_cache()
                     print(f"Forward Time: {time.perf_counter() - forward_start_time:.2f} seconds")
 
                     action_chunk_dict = result_batch.act
