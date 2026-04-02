@@ -879,8 +879,8 @@ class WanImageEncoder(torch.nn.Module):
         videos = self.transforms.transforms[-1](videos.mul_(0.5).add_(0.5))
 
         # forward
-        dtype = next(iter(self.model.visual.parameters())).dtype
-        videos = videos.to(dtype)
+        param = next(iter(self.model.visual.parameters()))
+        videos = videos.to(dtype=param.dtype, device=param.device)
         out = self.model.visual(videos, use_31_block=True)
         # The outputs of torch compile always need to be cloned before being used.
         out = out.clone()
