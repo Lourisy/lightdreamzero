@@ -548,8 +548,10 @@ class WANPolicyHead(ActionHead):
             return self._prompt_cache[input_hash]
 
         # 2) Dynamically load T5 to GPU for a split second (costs 11GB temporarily)
-        self.text_encoder.to(device=self.device)
+        self.text_encoder.to(device=self._device)
 
+        input_ids = input_ids.to(device=self._device)
+        attention_mask = attention_mask.to(device=self._device)
         seq_lens = attention_mask.gt(0).sum(dim=1).long()
         prompt_emb = self.text_encoder(input_ids, attention_mask)
         prompt_emb = prompt_emb.clone().to(dtype=torch.bfloat16)
@@ -580,7 +582,7 @@ class WANPolicyHead(ActionHead):
         with torch.amp.autocast(dtype=torch.bfloat16, device_type=torch.device(self._device).type):
             batch_size = image.shape[0]
             clip_context = self.image_encoder.encode_image(image)
-            image_input = image.transpose(1, 2)
+            image_input = image.transpose(1, 2).to(device=self._device, dtype=torch.bfloat16)
             image_zeros = torch.zeros(batch_size, 3, num_frames-1, height, width, dtype=torch.bfloat16, device=self._device)
             self._ensure_vae_on_device(image_input)
             with torch.no_grad():
@@ -1022,8 +1024,10 @@ class WANPolicyHead(ActionHead):
             assert videos.min() >= -1.0 and videos.max() <= 1.0, "videos must be in [-1,1] range"
             videos = videos.to(dtype=self.dtype)
 
-        state_features = state_features.to(dtype=torch.bfloat16)
-        videos = videos.to(dtype=torch.bfloat16)
+        state_features = state_features.to(device=self._device, dtype=torch.bfloat16)
+        videos = videos.to(device=self._device, dtype=torch.bfloat16)
+        if embodiment_id is not None:
+            embodiment_id = embodiment_id.to(device=self._device)
 
         # Wan 5B: same as training — resize to target resolution so latent matches DiT
         target_h = getattr(self.config, "target_video_height", None)
